@@ -1,0 +1,468 @@
+import React, { useState, useEffect } from 'react';
+import { doc, getDoc } from 'firebase/firestore';
+import { db } from '../firebase/config';
+
+const ShiftSchedule = ({ userData }) => {
+  const [teamMembers, setTeamMembers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [editingCell, setEditingCell] = useState(null);
+  const [editingValue, setEditingValue] = useState('');
+  const [scheduleData, setScheduleData] = useState({});
+
+  useEffect(() => {
+    if (userData?.department) {
+      fetchTeamMembers();
+    }
+  }, [userData]);
+
+  const fetchTeamMembers = async () => {
+    try {
+      const teamRef = doc(db, 'teams', userData.department);
+      const teamDoc = await getDoc(teamRef);
+      
+      if (teamDoc.exists()) {
+        const teamData = teamDoc.data();
+        setTeamMembers(teamData.members || []);
+      }
+    } catch (error) {
+      console.error('Error fetching team:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCellClick = (memberId, date, rowType) => {
+    const cellKey = `${memberId}-${date}-${rowType}`;
+    const currentValue = scheduleData[cellKey] || '';
+    setEditingCell(cellKey);
+    setEditingValue(currentValue);
+  };
+
+  const handleCellChange = (e) => {
+    setEditingValue(e.target.value);
+  };
+
+  const handleCellSave = (memberId, date, rowType) => {
+    const cellKey = `${memberId}-${date}-${rowType}`;
+    setScheduleData(prev => ({
+      ...prev,
+      [cellKey]: editingValue
+    }));
+    setEditingCell(null);
+    setEditingValue('');
+  };
+
+  const handleKeyDown = (e, memberId, date, rowType) => {
+    if (e.key === 'Enter') {
+      handleCellSave(memberId, date, rowType);
+    } else if (e.key === 'Escape') {
+      setEditingCell(null);
+      setEditingValue('');
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      const currentIndex = teamMembers.findIndex(member => member.id === memberId);
+      const currentDateIndex = date - 1;
+      
+      let newMemberId = memberId;
+      let newDate = date;
+      let newRowType = rowType;
+      
+      if (e.key === 'ArrowLeft' && currentDateIndex > 0) {
+        newDate = date - 1;
+      } else if (e.key === 'ArrowRight' && currentDateIndex < 30) {
+        newDate = date + 1;
+      } else if (e.key === 'ArrowUp') {
+        if (rowType === 'bottom') {
+          newRowType = 'top';
+        } else if (currentIndex > 0) {
+          newMemberId = teamMembers[currentIndex - 1].id;
+          newRowType = 'bottom';
+        }
+      } else if (e.key === 'ArrowDown') {
+        if (rowType === 'top') {
+          newRowType = 'bottom';
+        } else if (currentIndex < teamMembers.length - 1) {
+          newMemberId = teamMembers[currentIndex + 1].id;
+          newRowType = 'top';
+        }
+      }
+      
+      if (newMemberId !== memberId || newDate !== date || newRowType !== rowType) {
+        const cellKey = `${newMemberId}-${newDate}-${newRowType}`;
+        const currentValue = scheduleData[cellKey] || '';
+        setEditingCell(cellKey);
+        setEditingValue(currentValue);
+      }
+    }
+  };
+
+  // แยกเจ้าหน้าที่ตามตำแหน่ง
+  const nurses = teamMembers.filter(member => member.role === 'พยาบาล');
+  const otherStaff = teamMembers.filter(member => 
+    member.role === 'ผู้ช่วยพยาบาล' || member.role === 'พนักงานผู้ช่วยเหลือคนไข้'
+  );
+
+  // สร้างคอลัมน์วันที่ 1-31 พร้อมวันในสัปดาห์
+  const dateColumns = Array.from({ length: 31 }, (_, i) => {
+    const date = i + 1;
+    const dayNames = ['อา', 'จ', 'อ', 'พ', 'พฤ', 'ศ', 'ส'];
+    const dayIndex = (date - 1) % 7;
+    const dayName = dayNames[dayIndex];
+    const isWeekend = dayName === 'ส' || dayName === 'อา';
+    
+    return { date, dayName, isWeekend };
+  });
+
+  // คำนวณผลรวมเวร
+  const calculateShiftTotals = (memberId) => {
+    let totalShifts = 0;
+    let totalOT = 0;
+    let totalPay = 0;
+    
+    dateColumns.forEach(({ date }) => {
+      const topShift = scheduleData[`${memberId}-${date}-top`] || '';
+      const bottomShift = scheduleData[`${memberId}-${date}-bottom`] || '';
+      
+      if (topShift && topShift !== '-') totalShifts++;
+      if (bottomShift && bottomShift !== '-') totalShifts++;
+      
+      // คำนวณ OT และค่าเวรตามประเภทเวร
+      if (topShift === 'ด') totalOT += 8;
+      if (bottomShift === 'ด') totalOT += 8;
+      if (topShift === 'ก') totalPay += 1;
+      if (bottomShift === 'ก') totalPay += 1;
+      if (topShift === 'บ') totalPay += 1;
+      if (bottomShift === 'บ') totalPay += 1;
+    });
+    
+    return { totalShifts, totalOT, totalPay };
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-50 p-6">
+        <div className="max-w-7xl mx-auto">
+          <div className="text-center py-8">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
+            <p className="mt-4 text-gray-600">กำลังโหลด...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-slate-100 p-4">
+      <div className="w-full">
+        <div className="mb-6 bg-white/80 backdrop-blur-sm rounded-xl p-6 shadow-lg border border-blue-100 text-center">
+          <h1 className="text-3xl font-bold text-slate-800 mb-2">ตารางเวร</h1>
+          <p className="text-slate-600 font-medium">แผนก: {userData?.department}</p>
+        </div>
+
+        {/* ตารางพยาบาล */}
+        {nurses.length > 0 && (
+          <div className="bg-white/90 backdrop-blur-sm rounded-xl shadow-xl p-6 mb-8 border border-blue-200/50">
+            <h2 className="text-xl font-semibold text-slate-800 mb-4 flex items-center">
+              <div className="w-2 h-8 bg-blue-600 rounded-full mr-3"></div>
+              พยาบาล
+            </h2>
+            <div className="overflow-x-auto w-full">
+              <table className="w-full border border-slate-300 rounded-lg overflow-hidden">
+                <thead className="bg-gradient-to-r from-slate-700 to-slate-800">
+                  <tr>
+                    <th className="border border-slate-600 px-3 py-3 text-xs font-semibold text-white uppercase tracking-wider w-16">
+                      No.
+                    </th>
+                    <th className="border border-slate-600 px-3 py-3 text-xs font-semibold text-white uppercase tracking-wider w-48">
+                      ชื่อ-นามสกุล
+                    </th>
+                    {dateColumns.map(({ date, dayName, isWeekend }) => (
+                      <th key={date} className={`border border-slate-600 px-2 py-3 text-xs font-semibold text-white uppercase tracking-wider w-20 text-center ${isWeekend ? 'bg-yellow-600' : ''}`}>
+                        <div className="flex flex-col">
+                          <span>{date}</span>
+                          <span className="text-xs text-yellow-200">{dayName}</span>
+                        </div>
+                      </th>
+                    ))}
+                    <th className="border border-slate-600 px-3 py-3 text-xs font-semibold text-white uppercase tracking-wider w-20 text-center">
+                      เวรรวม
+                    </th>
+                    <th className="border border-slate-600 px-3 py-3 text-xs font-semibold text-white uppercase tracking-wider w-20 text-center">
+                      OT
+                    </th>
+                    <th className="border border-slate-600 px-3 py-3 text-xs font-semibold text-white uppercase tracking-wider w-24 text-center">
+                      ค่าเวร
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white">
+                  {nurses.map((member, index) => {
+                    const totals = calculateShiftTotals(member.id);
+                    return (
+                      <React.Fragment key={member.id}>
+                        {/* แถวที่ 1: ชื่อเจ้าหน้าที่ */}
+                        <tr className="hover:bg-gray-50 border-b border-slate-200">
+                          <td className="border border-gray-200 px-3 py-2 text-sm text-gray-900 text-center bg-blue-50 font-medium">
+                            {index + 1}
+                          </td>
+                          <td className="border border-gray-200 px-3 py-2 text-sm text-gray-900 text-center bg-blue-50 font-medium" colSpan={34}>
+                            <div className="flex flex-col items-center">
+                              <span className="font-medium">{member.firstName}</span>
+                              <span className="text-xs text-slate-600">{member.lastName}</span>
+                              <span className="inline-block bg-purple-200 text-purple-800 text-xs px-2 py-1 rounded-full mt-1">
+                                {member.role}
+                              </span>
+                            </div>
+                          </td>
+                        </tr>
+                        {/* แถวที่ 2: เวรแถวบน */}
+                        <tr className="hover:bg-gray-50 border-b border-slate-200">
+                          <td className="border border-gray-200 px-3 py-2 text-sm text-gray-900 text-center bg-gray-50">
+                            
+                          </td>
+                          <td className="border border-gray-200 px-3 py-2 text-sm text-gray-900 text-center bg-gray-50">
+                            เวรแถวบน
+                          </td>
+                          {dateColumns.map(({ date, isWeekend }) => (
+                            <td key={date} className={`border border-gray-200 px-2 py-2 text-sm text-gray-900 text-center cursor-pointer hover:bg-blue-50 ${isWeekend ? 'bg-yellow-50' : ''}`}>
+                              {editingCell === `${member.id}-${date}-top` ? (
+                                <input
+                                  type="text"
+                                  value={editingValue}
+                                  onChange={handleCellChange}
+                                  onKeyDown={(e) => handleKeyDown(e, member.id, date, 'top')}
+                                  onBlur={() => handleCellSave(member.id, date, 'top')}
+                                  className="w-full text-center text-xs border-none outline-none bg-blue-100 rounded"
+                                  autoFocus
+                                />
+                              ) : (
+                                <div 
+                                  className="text-center"
+                                  onClick={() => handleCellClick(member.id, date, 'top')}
+                                >
+                                  {scheduleData[`${member.id}-${date}-top`] || '-'}
+                                </div>
+                              )}
+                            </td>
+                          ))}
+                          <td className="border border-gray-200 px-3 py-2 text-sm text-gray-900 text-center font-medium bg-blue-50">
+                            {totals.totalShifts}
+                          </td>
+                          <td className="border border-gray-200 px-3 py-2 text-sm text-gray-900 text-center font-medium bg-blue-50">
+                            {totals.totalOT}
+                          </td>
+                          <td className="border border-gray-200 px-3 py-2 text-sm text-gray-900 text-center font-medium bg-blue-50">
+                            {totals.totalPay}
+                          </td>
+                        </tr>
+                        {/* แถวที่ 3: เวรแถวล่าง */}
+                        <tr className="hover:bg-gray-50 border-b-2 border-slate-300">
+                          <td className="border border-gray-200 px-3 py-2 text-sm text-gray-900 text-center bg-gray-50">
+                            
+                          </td>
+                          <td className="border border-gray-200 px-3 py-2 text-sm text-gray-900 text-center bg-gray-50">
+                            เวรแถวล่าง
+                          </td>
+                          {dateColumns.map(({ date, isWeekend }) => (
+                            <td key={date} className={`border border-gray-200 px-2 py-2 text-sm text-gray-900 text-center cursor-pointer hover:bg-blue-50 ${isWeekend ? 'bg-yellow-50' : ''}`}>
+                              {editingCell === `${member.id}-${date}-bottom` ? (
+                                <input
+                                  type="text"
+                                  value={editingValue}
+                                  onChange={handleCellChange}
+                                  onKeyDown={(e) => handleKeyDown(e, member.id, date, 'bottom')}
+                                  onBlur={() => handleCellSave(member.id, date, 'bottom')}
+                                  className="w-full text-center text-xs border-none outline-none bg-blue-100 rounded"
+                                  autoFocus
+                                />
+                              ) : (
+                                <div 
+                                  className="text-center"
+                                  onClick={() => handleCellClick(member.id, date, 'bottom')}
+                                >
+                                  {scheduleData[`${member.id}-${date}-bottom`] || '-'}
+                                </div>
+                              )}
+                            </td>
+                          ))}
+                          <td className="border border-gray-200 px-3 py-2 text-sm text-gray-900 text-center font-medium bg-gray-50">
+                            
+                          </td>
+                          <td className="border border-gray-200 px-3 py-2 text-sm text-gray-900 text-center font-medium bg-gray-50">
+                            
+                          </td>
+                          <td className="border border-gray-200 px-3 py-2 text-sm text-gray-900 text-center font-medium bg-gray-50">
+                            
+                          </td>
+                        </tr>
+                      </React.Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* ตารางผู้ช่วยพยาบาลและพนักงานผู้ช่วยเหลือคนไข้ */}
+        {otherStaff.length > 0 && (
+          <div className="bg-white/90 backdrop-blur-sm rounded-xl shadow-xl p-6 border border-blue-200/50">
+            <h2 className="text-xl font-semibold text-slate-800 mb-4 flex items-center">
+              <div className="w-2 h-8 bg-indigo-600 rounded-full mr-3"></div>
+              ผู้ช่วยพยาบาล / พนักงานผู้ช่วยเหลือคนไข้
+            </h2>
+            <div className="overflow-x-auto w-full">
+              <table className="w-full border border-slate-300 rounded-lg overflow-hidden">
+                <thead className="bg-gradient-to-r from-slate-700 to-slate-800">
+                  <tr>
+                    <th className="border border-slate-600 px-3 py-3 text-xs font-semibold text-white uppercase tracking-wider w-16">
+                      No.
+                    </th>
+                    <th className="border border-slate-600 px-3 py-3 text-xs font-semibold text-white uppercase tracking-wider w-48">
+                      ชื่อ-นามสกุล
+                    </th>
+                    {dateColumns.map(({ date, dayName, isWeekend }) => (
+                      <th key={date} className={`border border-slate-600 px-2 py-3 text-xs font-semibold text-white uppercase tracking-wider w-20 text-center ${isWeekend ? 'bg-yellow-600' : ''}`}>
+                        <div className="flex flex-col">
+                          <span>{date}</span>
+                          <span className="text-xs text-yellow-200">{dayName}</span>
+                        </div>
+                      </th>
+                    ))}
+                    <th className="border border-slate-600 px-3 py-3 text-xs font-semibold text-white uppercase tracking-wider w-20 text-center">
+                      เวรรวม
+                    </th>
+                    <th className="border border-slate-600 px-3 py-3 text-xs font-semibold text-white uppercase tracking-wider w-20 text-center">
+                      OT
+                    </th>
+                    <th className="border border-slate-600 px-3 py-3 text-xs font-semibold text-white uppercase tracking-wider w-24 text-center">
+                      ค่าเวร
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white">
+                  {otherStaff.map((member, index) => {
+                    const totals = calculateShiftTotals(member.id);
+                    return (
+                      <React.Fragment key={member.id}>
+                        {/* แถวที่ 1: ชื่อเจ้าหน้าที่ */}
+                        <tr className="hover:bg-gray-50 border-b border-slate-200">
+                          <td className="border border-gray-200 px-3 py-2 text-sm text-gray-900 text-center bg-indigo-50 font-medium">
+                            {index + 1}
+                          </td>
+                          <td className="border border-gray-200 px-3 py-2 text-sm text-gray-900 text-center bg-indigo-50 font-medium" colSpan={34}>
+                            <div className="flex flex-col items-center">
+                              <span className="font-medium">{member.firstName}</span>
+                              <span className="text-xs text-slate-600">{member.lastName}</span>
+                              <span className="inline-block bg-indigo-200 text-indigo-800 text-xs px-2 py-1 rounded-full mt-1">
+                                {member.role}
+                              </span>
+                            </div>
+                          </td>
+                        </tr>
+                        {/* แถวที่ 2: เวรแถวบน */}
+                        <tr className="hover:bg-gray-50 border-b border-slate-200">
+                          <td className="border border-gray-200 px-3 py-2 text-sm text-gray-900 text-center bg-gray-50">
+                            
+                          </td>
+                          <td className="border border-gray-200 px-3 py-2 text-sm text-gray-900 text-center bg-gray-50">
+                            เวรแถวบน
+                          </td>
+                          {dateColumns.map(({ date, isWeekend }) => (
+                            <td key={date} className={`border border-gray-200 px-2 py-2 text-sm text-gray-900 text-center cursor-pointer hover:bg-blue-50 ${isWeekend ? 'bg-yellow-50' : ''}`}>
+                              {editingCell === `${member.id}-${date}-top` ? (
+                                <input
+                                  type="text"
+                                  value={editingValue}
+                                  onChange={handleCellChange}
+                                  onKeyDown={(e) => handleKeyDown(e, member.id, date, 'top')}
+                                  onBlur={() => handleCellSave(member.id, date, 'top')}
+                                  className="w-full text-center text-xs border-none outline-none bg-blue-100 rounded"
+                                  autoFocus
+                                />
+                              ) : (
+                                <div 
+                                  className="text-center"
+                                  onClick={() => handleCellClick(member.id, date, 'top')}
+                                >
+                                  {scheduleData[`${member.id}-${date}-top`] || '-'}
+                                </div>
+                              )}
+                            </td>
+                          ))}
+                          <td className="border border-gray-200 px-3 py-2 text-sm text-gray-900 text-center font-medium bg-indigo-50">
+                            {totals.totalShifts}
+                          </td>
+                          <td className="border border-gray-200 px-3 py-2 text-sm text-gray-900 text-center font-medium bg-indigo-50">
+                            {totals.totalOT}
+                          </td>
+                          <td className="border border-gray-200 px-3 py-2 text-sm text-gray-900 text-center font-medium bg-indigo-50">
+                            {totals.totalPay}
+                          </td>
+                        </tr>
+                        {/* แถวที่ 3: เวรแถวล่าง */}
+                        <tr className="hover:bg-gray-50 border-b-2 border-slate-300">
+                          <td className="border border-gray-200 px-3 py-2 text-sm text-gray-900 text-center bg-gray-50">
+                            
+                          </td>
+                          <td className="border border-gray-200 px-3 py-2 text-sm text-gray-900 text-center bg-gray-50">
+                            เวรแถวล่าง
+                          </td>
+                          {dateColumns.map(({ date, isWeekend }) => (
+                            <td key={date} className={`border border-gray-200 px-2 py-2 text-sm text-gray-900 text-center cursor-pointer hover:bg-blue-50 ${isWeekend ? 'bg-yellow-50' : ''}`}>
+                              {editingCell === `${member.id}-${date}-bottom` ? (
+                                <input
+                                  type="text"
+                                  value={editingValue}
+                                  onChange={handleCellChange}
+                                  onKeyDown={(e) => handleKeyDown(e, member.id, date, 'bottom')}
+                                  onBlur={() => handleCellSave(member.id, date, 'bottom')}
+                                  className="w-full text-center text-xs border-none outline-none bg-blue-100 rounded"
+                                  autoFocus
+                                />
+                              ) : (
+                                <div 
+                                  className="text-center"
+                                  onClick={() => handleCellClick(member.id, date, 'bottom')}
+                                >
+                                  {scheduleData[`${member.id}-${date}-bottom`] || '-'}
+                                </div>
+                              )}
+                            </td>
+                          ))}
+                          <td className="border border-gray-200 px-3 py-2 text-sm text-gray-900 text-center font-medium bg-gray-50">
+                            
+                          </td>
+                          <td className="border border-gray-200 px-3 py-2 text-sm text-gray-900 text-center font-medium bg-gray-50">
+                            
+                          </td>
+                          <td className="border border-gray-200 px-3 py-2 text-sm text-gray-900 text-center font-medium bg-gray-50">
+                            
+                          </td>
+                        </tr>
+                      </React.Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {teamMembers.length === 0 && (
+          <div className="bg-white/90 backdrop-blur-sm rounded-xl shadow-xl p-6 text-center border border-blue-200/50">
+            <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
+              <svg className="w-8 h-8 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+              </svg>
+            </div>
+            <p className="text-slate-600 font-medium">ยังไม่มีสมาชิกในทีม</p>
+            <p className="text-slate-500 text-sm mt-1">กรุณาตั้งค่าทีมในหน้า "ตั้งค่า" ก่อน</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default ShiftSchedule;

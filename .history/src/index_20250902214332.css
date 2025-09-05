@@ -1,0 +1,66 @@
+@import url('https://fonts.googleapis.com/css2?family=Kanit:wght@300;400;500;600;700&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  margin: 0;
+  font-family: 'Kanit', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
+    monospace;
+}
+
+/* Sticky table headers */
+.sticky-table-container {
+  position: relative;
+  overflow: auto;
+  max-height: 80vh;
+}
+
+.sticky-table-container table {
+  position: relative;
+}
+
+.sticky-table-container th.sticky-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background-color: #f9fafb;
+}
+
+.sticky-table-container th.sticky-header-left {
+  position: sticky;
+  left: 0;
+  top: 0;
+  z-index: 20;
+  background-color: #f9fafb;
+}
+
+.sticky-table-container th.sticky-header-left-name {
+  position: sticky;
+  left: 40px;
+  top: 0;
+  z-index: 20;
+  background-color: #f9fafb;
+}
+
+.sticky-table-container td.sticky-cell {
+  position: sticky;
+  left: 0;
+  z-index: 10;
+  background-color: #f9fafb;
+}
+
+.sticky-table-container td.sticky-cell-name {
+  position: sticky;
+  left: 40px;
+  z-index: 10;
+  background-color: white;
+}
