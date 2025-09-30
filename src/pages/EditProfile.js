@@ -227,16 +227,6 @@ const EditProfile = ({ userData, refreshUserData }) => {
               </select>
             </div>
 
-            {/* อีเมล (แสดงอย่างเดียว) */}
-            <div>
-              <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-2">
-                อีเมล
-              </label>
-              <div className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-gray-600">
-                {userData?.email || 'ไม่พบข้อมูลอีเมล'}
-              </div>
-              <p className="text-xs text-gray-500 mt-1">ไม่สามารถแก้ไขอีเมลได้</p>
-            </div>
 
             {/* Error Message */}
             {error && (
