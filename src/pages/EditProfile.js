@@ -61,8 +61,8 @@ const EditProfile = ({ userData, refreshUserData }) => {
       return;
     }
     
-    if (!formData.department || !formData.role) {
-      setError('กรุณาเลือกแผนกและตำแหน่ง');
+    if (!formData.role) {
+      setError('กรุณาเลือกตำแหน่ง');
       return;
     }
 
@@ -74,7 +74,6 @@ const EditProfile = ({ userData, refreshUserData }) => {
       await updateDoc(userRef, {
         firstName: formData.firstName.trim(),
         lastName: formData.lastName.trim(),
-        department: formData.department,
         role: formData.role,
         updatedAt: new Date()
       });
@@ -183,26 +182,15 @@ const EditProfile = ({ userData, refreshUserData }) => {
               />
             </div>
 
-            {/* แผนก */}
+            {/* แผนก (แสดงอย่างเดียว) */}
             <div>
               <label htmlFor="department" className="block text-sm font-medium text-gray-700 mb-2">
                 แผนก
               </label>
-              <select
-                id="department"
-                name="department"
-                required
-                value={formData.department}
-                onChange={handleChange}
-                className="w-full px-4 py-3 bg-white/60 backdrop-blur-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200"
-              >
-                <option value="">เลือกแผนก</option>
-                {departmentOptions.map((dept) => (
-                  <option key={dept} value={dept}>
-                    {dept}
-                  </option>
-                ))}
-              </select>
+              <div className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-gray-600">
+                {userData?.department || 'ไม่พบข้อมูลแผนก'}
+              </div>
+              <p className="text-xs text-gray-500 mt-1">ไม่สามารถแก้ไขแผนกได้</p>
             </div>
 
             {/* ตำแหน่ง */}
