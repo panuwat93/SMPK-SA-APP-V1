@@ -1,0 +1,1177 @@
+import React, { useState, useEffect } from 'react';
+import { doc, getDoc, setDoc, updateDoc, onSnapshot } from 'firebase/firestore';
+import { db } from '../firebase/config';
+import LandscapeToggle from '../components/LandscapeToggle';
+
+const Assignments = ({ userData }) => {
+  const [teamMembers, setTeamMembers] = useState([]);
+  const [bedOptions, setBedOptions] = useState([]);
+  const [dutyOptions, setDutyOptions] = useState([]);
+  const [extraDutyOptions, setExtraDutyOptions] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [activeShift, setActiveShift] = useState('morning'); // 'morning', 'afternoon', 'night'
+  const [assignments, setAssignments] = useState({
+    morning: { nurses: [], assistants: [] },
+    afternoon: { nurses: [], assistants: [] },
+    night: { nurses: [], assistants: [] }
+  });
+  const [savingNurses, setSavingNurses] = useState(false);
+  const [savingAssistants, setSavingAssistants] = useState(false);
+  const [savedNurses, setSavedNurses] = useState(false);
+  const [savedAssistants, setSavedAssistants] = useState(false);
+  const [lastSavedByNurses, setLastSavedByNurses] = useState('');
+  const [lastSavedByAssistants, setLastSavedByAssistants] = useState('');
+  const [selectedDate, setSelectedDate] = useState(new Date());
+  const [scheduleData, setScheduleData] = useState({});
+  const [permissions, setPermissions] = useState({});
+  const [canManageAssignments, setCanManageAssignments] = useState(false);
+  
+  // Real-time subscription cleanup
+  const [scheduleUnsubscribe, setScheduleUnsubscribe] = useState(null);
+  const [assignmentsUnsubscribe, setAssignmentsUnsubscribe] = useState(null);
+  const [teamMembersUnsubscribe, setTeamMembersUnsubscribe] = useState(null);
+
+  useEffect(() => {
+    if (userData?.department) {
+      fetchData();
+    }
+    
+    // Cleanup function
+    return () => {
+      if (scheduleUnsubscribe) {
+        scheduleUnsubscribe();
+      }
+      if (assignmentsUnsubscribe) {
+        assignmentsUnsubscribe();
+      }
+      if (teamMembersUnsubscribe) {
+        teamMembersUnsubscribe();
+      }
+    };
+  }, [userData]);
+
+  // จัดการเมื่อเปลี่ยนวันที่
+  useEffect(() => {
+    if (userData?.department && teamMembers.length > 0) {
+      // ยกเลิก subscriptions เก่า
+      if (scheduleUnsubscribe) {
+        scheduleUnsubscribe();
+      }
+      if (assignmentsUnsubscribe) {
+        assignmentsUnsubscribe();
+      }
+      
+      // สร้าง subscriptions ใหม่สำหรับวันที่ใหม่
+      const scheduleUnsub = loadScheduleData(selectedDate);
+      const assignmentsUnsub = loadAssignments(selectedDate);
+      
+      setScheduleUnsubscribe(() => scheduleUnsub);
+      setAssignmentsUnsubscribe(() => assignmentsUnsub);
+    }
+    
+    // Cleanup function
+    return () => {
+      if (scheduleUnsubscribe) {
+        scheduleUnsubscribe();
+      }
+      if (assignmentsUnsubscribe) {
+        assignmentsUnsubscribe();
+      }
+      if (teamMembersUnsubscribe) {
+        teamMembersUnsubscribe();
+      }
+    };
+  }, [selectedDate, userData?.department, teamMembers.length]);
+
+  const fetchData = async () => {
+    try {
+      // ยกเลิก subscriptions เก่า
+      if (scheduleUnsubscribe) {
+        scheduleUnsubscribe();
+      }
+      if (assignmentsUnsubscribe) {
+        assignmentsUnsubscribe();
+      }
+      
+      await Promise.all([
+        fetchTeamMembers(),
+        fetchBedOptions(),
+        fetchDutyOptions(),
+        fetchExtraDutyOptions(),
+        fetchPermissions()
+      ]);
+      
+      // สร้าง Real-time subscriptions ใหม่
+      const teamMembersUnsub = await fetchTeamMembers();
+      const scheduleUnsub = loadScheduleData();
+      const assignmentsUnsub = loadAssignments();
+      
+      setTeamMembersUnsubscribe(() => teamMembersUnsub);
+      setScheduleUnsubscribe(() => scheduleUnsub);
+      setAssignmentsUnsubscribe(() => assignmentsUnsub);
+    } catch (error) {
+      console.error('Error fetching data:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchTeamMembers = async () => {
+    try {
+      const teamRef = doc(db, 'teams', userData.department);
+      
+      // ใช้ onSnapshot สำหรับ Real-time updates ของ team members
+      const unsubscribe = onSnapshot(teamRef, (teamDoc) => {
+        if (teamDoc.exists()) {
+          const members = teamDoc.data().members || [];
+          setTeamMembers(members);
+        }
+      }, (error) => {
+        console.error('Error loading team members:', error);
+      });
+      
+      return unsubscribe;
+    } catch (error) {
+      console.error('Error fetching team members:', error);
+    }
+  };
+
+  const fetchBedOptions = async () => {
+    try {
+      const bedOptionsRef = doc(db, 'bedOptions', userData.department);
+      const bedOptionsDoc = await getDoc(bedOptionsRef);
+      
+      if (bedOptionsDoc.exists()) {
+        const data = bedOptionsDoc.data();
+        const options = data.options || [];
+        // รองรับรูปแบบเก่า (string) และใหม่ (object พร้อมธง)
+        const formattedOptions = options.map((option, index) => {
+          if (typeof option === 'string') {
+            return { id: index + 1, name: option, forNurse: true, forAssistant: true };
+          }
+          return {
+            id: option.id || index + 1,
+            name: option.name,
+            forNurse: option.forNurse !== false,
+            forAssistant: option.forAssistant !== false
+          };
+        });
+        setBedOptions(formattedOptions);
+      } else {
+        setBedOptions([]);
+      }
+    } catch (error) {
+      console.error('Error fetching bed options:', error);
+      setBedOptions([]);
+    }
+  };
+
+  const fetchDutyOptions = async () => {
+    try {
+      const dutyOptionsRef = doc(db, 'dutyOptions', userData.department);
+      const dutyOptionsDoc = await getDoc(dutyOptionsRef);
+      
+      if (dutyOptionsDoc.exists()) {
+        const data = dutyOptionsDoc.data();
+        const options = data.options || [];
+        
+        // แปลงข้อมูลให้เป็นรูปแบบที่ต้องการ (object with id and name)
+        const formattedOptions = options.map((option, index) => {
+          if (typeof option === 'string') {
+            return { id: index + 1, name: option };
+          }
+          return option; // ถ้าเป็น object อยู่แล้ว
+        });
+        
+        setDutyOptions(formattedOptions);
+      } else {
+        setDutyOptions([]);
+      }
+    } catch (error) {
+      console.error('Error fetching duty options:', error);
+      setDutyOptions([]);
+    }
+  };
+
+  const fetchExtraDutyOptions = async () => {
+    try {
+      const extraDutyOptionsRef = doc(db, 'extraDutyOptions', userData.department);
+      const extraDutyOptionsDoc = await getDoc(extraDutyOptionsRef);
+      
+      if (extraDutyOptionsDoc.exists()) {
+        const data = extraDutyOptionsDoc.data();
+        const options = data.options || [];
+        
+        // แปลงข้อมูลให้เป็นรูปแบบที่ต้องการ (object with id and name)
+        const formattedOptions = options.map((option, index) => {
+          if (typeof option === 'string') {
+            return { id: index + 1, name: option };
+          }
+          return option; // ถ้าเป็น object อยู่แล้ว
+        });
+        
+        setExtraDutyOptions(formattedOptions);
+      } else {
+        setExtraDutyOptions([]);
+      }
+    } catch (error) {
+      console.error('Error fetching extra duty options:', error);
+      setExtraDutyOptions([]);
+    }
+  };
+
+  const fetchPermissions = async () => {
+    try {
+      const permissionsRef = doc(db, 'permissions', userData.department);
+      const permissionsDoc = await getDoc(permissionsRef);
+      
+      if (permissionsDoc.exists()) {
+        const permissionsData = permissionsDoc.data().permissions || {};
+        setPermissions(permissionsData);
+        checkManagePermission(permissionsData);
+      } else {
+        // ถ้าไม่มีข้อมูลสิทธิ์ ให้ Admin มีสิทธิ์เสมอ
+        if (userData?.userType === 'Admin') {
+          setCanManageAssignments(true);
+        } else {
+          setCanManageAssignments(false);
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching permissions:', error);
+      // ถ้าเกิดข้อผิดพลาด ให้ Admin มีสิทธิ์เสมอ
+      if (userData?.userType === 'Admin') {
+        setCanManageAssignments(true);
+      } else {
+        setCanManageAssignments(false);
+      }
+    }
+  };
+
+  const checkManagePermission = (permissionsData) => {
+    // Admin มีสิทธิ์เสมอ
+    if (userData?.userType === 'Admin') {
+      setCanManageAssignments(true);
+      return;
+    }
+    
+    // ตรวจสอบสิทธิ์จากข้อมูลที่เก็บไว้
+    const userPermissions = permissionsData[userData?.uid];
+    if (userPermissions && userPermissions.manageAssignments) {
+      setCanManageAssignments(true);
+    } else {
+      setCanManageAssignments(false);
+    }
+  };
+
+  const loadScheduleData = (date = selectedDate) => {
+    try {
+      const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+      const scheduleRef = doc(db, 'schedules', `${userData.department}-${monthKey}`);
+      
+      // ใช้ onSnapshot สำหรับ Real-time updates
+      const unsubscribe = onSnapshot(scheduleRef, async (scheduleDoc) => {
+        if (scheduleDoc.exists()) {
+          const data = scheduleDoc.data();
+          setScheduleData(data);
+          
+          // เมื่อตารางเวรเปลี่ยน ให้อัปเดต assignments ทันที
+          await updateAssignmentsFromScheduleChange(data, date);
+        } else {
+          setScheduleData({});
+        }
+      }, (error) => {
+        console.error('Error loading schedule data:', error);
+        setScheduleData({});
+      });
+      
+      return unsubscribe;
+    } catch (error) {
+      console.error('Error setting up schedule listener:', error);
+      setScheduleData({});
+      return null;
+    }
+  };
+
+  const updateAssignmentsFromScheduleChange = async (newScheduleData, date = selectedDate) => {
+    try {
+      const dayIndex = date.getDate() - 1; // วันที่ 1 = index 0
+      const newAssignments = {
+        morning: { nurses: [], assistants: [] },
+        afternoon: { nurses: [], assistants: [] },
+        night: { nurses: [], assistants: [] }
+      };
+
+      // ดึงข้อมูล assignments ปัจจุบันจาก Firebase
+      const dateKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+      const assignmentsRef = doc(db, 'assignments', `${userData.department}-${dateKey}`);
+      const currentAssignmentsDoc = await getDoc(assignmentsRef);
+      
+      let existingAssignments = {
+        morning: { nurses: [], assistants: [] },
+        afternoon: { nurses: [], assistants: [] },
+        night: { nurses: [], assistants: [] }
+      };
+      
+      if (currentAssignmentsDoc.exists()) {
+        existingAssignments = currentAssignmentsDoc.data().assignments || existingAssignments;
+      }
+
+      // สร้าง assignments ใหม่จากตารางเวร
+      teamMembers.forEach(member => {
+        const memberSchedule = newScheduleData.schedule?.[member.id]?.[dayIndex];
+        const topShift = memberSchedule?.top || '';
+        const bottomShift = memberSchedule?.bottom || '';
+        
+        // ตรวจสอบเวรเช้า (ช)
+        if (topShift === 'ช' || bottomShift === 'ช') {
+          const assignmentId = `${member.id}-morning`;
+          
+          // หา assignment เดิม (ถ้ามี)
+          const existingAssignment = existingAssignments.morning.nurses.find(a => a.id === assignmentId) ||
+                                   existingAssignments.morning.assistants.find(a => a.id === assignmentId);
+          
+          const assignment = {
+            id: assignmentId,
+            memberId: member.id,
+            bed: existingAssignment?.bed || '',
+            duty: existingAssignment?.duty || '',
+            ert: existingAssignment?.ert || '',
+            team: existingAssignment?.team || ''
+          };
+          
+          if (isNurseRole(member.role)) {
+            newAssignments.morning.nurses.push(assignment);
+          } else {
+            newAssignments.morning.assistants.push(assignment);
+          }
+        }
+        
+        // ตรวจสอบเวรบ่าย (บ)
+        if (topShift === 'บ' || bottomShift === 'บ') {
+          const assignmentId = `${member.id}-afternoon`;
+          
+          const existingAssignment = existingAssignments.afternoon.nurses.find(a => a.id === assignmentId) ||
+                                   existingAssignments.afternoon.assistants.find(a => a.id === assignmentId);
+          
+          const assignment = {
+            id: assignmentId,
+            memberId: member.id,
+            bed: existingAssignment?.bed || '',
+            duty: existingAssignment?.duty || '',
+            ert: existingAssignment?.ert || '',
+            team: existingAssignment?.team || ''
+          };
+          
+          if (isNurseRole(member.role)) {
+            newAssignments.afternoon.nurses.push(assignment);
+          } else {
+            newAssignments.afternoon.assistants.push(assignment);
+          }
+        }
+        
+        // ตรวจสอบเวรดึก (ด)
+        if (topShift === 'ด' || bottomShift === 'ด') {
+          const assignmentId = `${member.id}-night`;
+          
+          const existingAssignment = existingAssignments.night.nurses.find(a => a.id === assignmentId) ||
+                                   existingAssignments.night.assistants.find(a => a.id === assignmentId);
+          
+          const assignment = {
+            id: assignmentId,
+            memberId: member.id,
+            bed: existingAssignment?.bed || '',
+            duty: existingAssignment?.duty || '',
+            ert: existingAssignment?.ert || '',
+            team: existingAssignment?.team || ''
+          };
+          
+          if (isNurseRole(member.role)) {
+            newAssignments.night.nurses.push(assignment);
+          } else {
+            newAssignments.night.assistants.push(assignment);
+          }
+        }
+      });
+
+      // อัปเดต state และบันทึกลง Firebase
+      setAssignments(newAssignments);
+      
+      // บันทึกข้อมูลใหม่ลง Firebase (เฉพาะถ้ามีการเปลี่ยนแปลง)
+      if (JSON.stringify(newAssignments) !== JSON.stringify(existingAssignments)) {
+        await setDoc(assignmentsRef, {
+          department: userData.department,
+          date: dateKey,
+          assignments: newAssignments,
+          updatedAt: new Date(),
+          updatedBy: 'system',
+          updateReason: 'schedule_change'
+        }, { merge: true });
+      }
+      
+    } catch (error) {
+      console.error('Error updating assignments from schedule change:', error);
+    }
+  };
+
+  const loadAssignments = (date = selectedDate) => {
+    try {
+      const dateKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+      const assignmentsRef = doc(db, 'assignments', `${userData.department}-${dateKey}`);
+      
+      // ใช้ onSnapshot สำหรับ Real-time updates
+      const unsubscribe = onSnapshot(assignmentsRef, async (assignmentsDoc) => {
+        if (assignmentsDoc.exists()) {
+          const data = assignmentsDoc.data();
+          setAssignments(data.assignments || {
+            morning: { nurses: [], assistants: [] },
+            afternoon: { nurses: [], assistants: [] },
+            night: { nurses: [], assistants: [] }
+          });
+          
+          // อัปเดตข้อมูลผู้บันทึกล่าสุดแยกตามประเภท
+          if (data.lastSavedByNurses) {
+            setLastSavedByNurses(data.lastSavedByNurses);
+          }
+          if (data.lastSavedByAssistants) {
+            setLastSavedByAssistants(data.lastSavedByAssistants);
+          }
+        } else {
+          // สร้างข้อมูลจากตารางเวร
+          await generateAssignmentsFromSchedule(date);
+        }
+      }, (error) => {
+        console.error('Error loading assignments:', error);
+      });
+      
+      return unsubscribe;
+    } catch (error) {
+      console.error('Error setting up assignments listener:', error);
+      return null;
+    }
+  };
+
+  const saveAssignmentsToFirebase = async (assignmentsData = assignments, staffType = 'all') => {
+    // ตรวจสอบสิทธิ์การแก้ไข
+    if (!canManageAssignments) {
+      alert('คุณไม่มีสิทธิ์แก้ไขตารางมอบหมายงาน กรุณาติดต่อหัวหน้าหน่วยงาน');
+      return;
+    }
+    
+    try {
+      const dateKey = `${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, '0')}-${String(selectedDate.getDate()).padStart(2, '0')}`;
+      const assignmentsRef = doc(db, 'assignments', `${userData.department}-${dateKey}`);
+      
+      // ดึงข้อมูลปัจจุบันจาก Firebase ก่อน
+      const currentDoc = await getDoc(assignmentsRef);
+      let currentAssignments = assignments;
+      
+      if (currentDoc.exists()) {
+        currentAssignments = currentDoc.data().assignments || assignments;
+      }
+      
+      // อัปเดตเฉพาะส่วนที่ต้องการบันทึก
+      let updatedAssignments = { ...currentAssignments };
+      
+      if (staffType === 'nurses') {
+        // บันทึกเฉพาะข้อมูลพยาบาล
+        updatedAssignments = {
+          ...currentAssignments,
+          [activeShift]: {
+            ...currentAssignments[activeShift],
+            nurses: assignmentsData[activeShift].nurses
+          }
+        };
+      } else if (staffType === 'assistants') {
+        // บันทึกเฉพาะข้อมูลผู้ช่วย
+        updatedAssignments = {
+          ...currentAssignments,
+          [activeShift]: {
+            ...currentAssignments[activeShift],
+            assistants: assignmentsData[activeShift].assistants
+          }
+        };
+      } else {
+        // บันทึกทั้งหมด
+        updatedAssignments = assignmentsData;
+      }
+      
+      await setDoc(assignmentsRef, {
+        department: userData.department,
+        date: dateKey,
+        assignments: updatedAssignments,
+        savedAt: new Date(),
+        savedBy: userData.username,
+        savedByDisplayName: `${userData.firstName} ${userData.lastName}`,
+        staffType: staffType,
+        // เก็บข้อมูลผู้บันทึกแยกตามประเภท
+        lastSavedByNurses: staffType === 'nurses' ? `${userData.firstName} ${userData.lastName}` : currentDoc.exists() ? currentDoc.data().lastSavedByNurses || '' : '',
+        lastSavedByAssistants: staffType === 'assistants' ? `${userData.firstName} ${userData.lastName}` : currentDoc.exists() ? currentDoc.data().lastSavedByAssistants || '' : ''
+      });
+      
+      // อัปเดต state ตามประเภทที่บันทึก
+      if (staffType === 'nurses') {
+        setLastSavedByNurses(`${userData.firstName} ${userData.lastName}`);
+      } else if (staffType === 'assistants') {
+        setLastSavedByAssistants(`${userData.firstName} ${userData.lastName}`);
+      }
+    } catch (error) {
+      console.error('Error auto-saving assignments:', error);
+    }
+  };
+
+
+  const saveNursesAssignments = async () => {
+    // ตรวจสอบสิทธิ์การแก้ไข
+    if (!canManageAssignments) {
+      alert('คุณไม่มีสิทธิ์แก้ไขตารางมอบหมายงาน กรุณาติดต่อหัวหน้าหน่วยงาน');
+      return;
+    }
+    
+    setSavingNurses(true);
+    try {
+      await saveAssignmentsToFirebase(assignments, 'nurses');
+      setSavedNurses(true);
+      setTimeout(() => setSavedNurses(false), 3000);
+    } catch (error) {
+      console.error('Error saving nurses assignments:', error);
+    } finally {
+      setSavingNurses(false);
+    }
+  };
+
+  const saveAssistantsAssignments = async () => {
+    // ตรวจสอบสิทธิ์การแก้ไข
+    if (!canManageAssignments) {
+      alert('คุณไม่มีสิทธิ์แก้ไขตารางมอบหมายงาน กรุณาติดต่อหัวหน้าหน่วยงาน');
+      return;
+    }
+    
+    setSavingAssistants(true);
+    try {
+      await saveAssignmentsToFirebase(assignments, 'assistants');
+      setSavedAssistants(true);
+      setTimeout(() => setSavedAssistants(false), 3000);
+    } catch (error) {
+      console.error('Error saving assistants assignments:', error);
+    } finally {
+      setSavingAssistants(false);
+    }
+  };
+
+
+
+    const updateNurseAssignment = (shift, assignmentId, field, value) => {
+    // ตรวจสอบสิทธิ์การแก้ไข
+    if (!canManageAssignments) {
+      alert('คุณไม่มีสิทธิ์แก้ไขตารางมอบหมายงาน กรุณาติดต่อหัวหน้าหน่วยงาน');
+      return;
+    }
+    
+    setAssignments(prev => {
+      const newAssignments = {
+        ...prev,
+        [shift]: {
+          ...prev[shift],
+          nurses: prev[shift].nurses.map(assignment => {
+            if (assignment.id === assignmentId) {
+              const updatedAssignment = { ...assignment, [field]: value };
+              
+              // ถ้าเปลี่ยนเตียง ให้ตั้งค่าวิชาชีพและ ERT อัตโนมัติ
+              if (field === 'bed') {
+                const selectedBed = bedOptions.find(bed => bed.name === value);
+                if (selectedBed && selectedBed.forNurse !== false) {
+                  updatedAssignment.duty = selectedBed.duty || '';
+                  updatedAssignment.ert = selectedBed.ert || '';
+                }
+              }
+              
+              return updatedAssignment;
+            }
+            return assignment;
+          })
+        }
+      };
+      
+      // บันทึกทันทีเมื่อมีการเปลี่ยนแปลง
+      saveAssignmentsToFirebase(newAssignments, 'nurses');
+      
+      return newAssignments;
+    });
+  };
+
+    const updateAssistantAssignment = (shift, assignmentId, field, value) => {
+    // ตรวจสอบสิทธิ์การแก้ไข
+    if (!canManageAssignments) {
+      alert('คุณไม่มีสิทธิ์แก้ไขตารางมอบหมายงาน กรุณาติดต่อหัวหน้าหน่วยงาน');
+      return;
+    }
+    
+    setAssignments(prev => {
+      const newAssignments = {
+        ...prev,
+        [shift]: {
+          ...prev[shift],
+          assistants: prev[shift].assistants.map(assignment => {
+            if (assignment.id === assignmentId) {
+              const updatedAssignment = { ...assignment, [field]: value };
+              
+              // ถ้าเปลี่ยนเตียง ให้ตั้งค่า ERT อัตโนมัติ
+              if (field === 'bed') {
+                const selectedBed = bedOptions.find(bed => bed.name === value);
+                if (selectedBed && selectedBed.forAssistant !== false) {
+                  updatedAssignment.ert = selectedBed.ert || '';
+                }
+              }
+              
+              // ถ้าเปลี่ยนทีม ให้ตั้งค่า ERT อัตโนมัติ
+              if (field === 'team') {
+                if (value === 'TEAM A') {
+                  updatedAssignment.ert = 'เคลื่อนย้ายกู้ชีพ';
+                } else if (value === 'TEAM B') {
+                  updatedAssignment.ert = 'ช่างและเส้นทาง';
+                }
+              }
+              
+              return updatedAssignment;
+            }
+            return assignment;
+          })
+        }
+      };
+      
+      // บันทึกทันทีเมื่อมีการเปลี่ยนแปลง
+      saveAssignmentsToFirebase(newAssignments, 'assistants');
+      
+      return newAssignments;
+    });
+  };
+
+
+
+  const isNurseRole = (role = '') => {
+    const text = String(role || '');
+    if (!text) return false;
+    if (text.includes('ผู้ช่วยพยาบาล') || text.includes('ผู้ช่วยเหลือคนไข้')) return false;
+    return text.startsWith('พยาบาล');
+  };
+
+  const getNurses = () => {
+    return teamMembers.filter(member => isNurseRole(member.role));
+  };
+
+  const getAssistants = () => {
+    return teamMembers.filter(member => 
+      member.role === 'ผู้ช่วยพยาบาล' || member.role === 'พนักงานผู้ช่วยเหลือคนไข้'
+    );
+  };
+
+  const getShiftName = (shift) => {
+    const shiftNames = {
+      morning: 'เช้า',
+      afternoon: 'บ่าย',
+      night: 'ดึก'
+    };
+    return shiftNames[shift] || shift;
+  };
+
+  const generateAssignmentsFromSchedule = async (date) => {
+    const dayIndex = date.getDate() - 1; // วันที่ 1 = index 0
+    const newAssignments = {
+      morning: { nurses: [], assistants: [] },
+      afternoon: { nurses: [], assistants: [] },
+      night: { nurses: [], assistants: [] }
+    };
+
+    // ดึงเจ้าหน้าที่ที่มีเวรในวันที่เลือก
+    teamMembers.forEach(member => {
+      // ตรวจสอบข้อมูลจาก scheduleData.schedule
+      const memberSchedule = scheduleData.schedule?.[member.id]?.[dayIndex];
+      const topShift = memberSchedule?.top || '';
+      const bottomShift = memberSchedule?.bottom || '';
+      
+      // ตรวจสอบเวรเช้า (ช)
+      if (topShift === 'ช' || bottomShift === 'ช') {
+        const assignment = {
+          id: `${member.id}-morning`,
+          memberId: member.id,
+          bed: '',
+          duty: '',
+          ert: '',
+          team: ''
+        };
+        
+        if (isNurseRole(member.role)) {
+          newAssignments.morning.nurses.push(assignment);
+        } else {
+          newAssignments.morning.assistants.push(assignment);
+        }
+      }
+      
+      // ตรวจสอบเวรบ่าย (บ)
+      if (topShift === 'บ' || bottomShift === 'บ') {
+        const assignment = {
+          id: `${member.id}-afternoon`,
+          memberId: member.id,
+          bed: '',
+          duty: '',
+          ert: '',
+          team: ''
+        };
+        
+        if (isNurseRole(member.role)) {
+          newAssignments.afternoon.nurses.push(assignment);
+        } else {
+          newAssignments.afternoon.assistants.push(assignment);
+        }
+      }
+      
+      // ตรวจสอบเวรดึก (ด)
+      if (topShift === 'ด' || bottomShift === 'ด') {
+        const assignment = {
+          id: `${member.id}-night`,
+          memberId: member.id,
+          bed: '',
+          duty: '',
+          ert: '',
+          team: ''
+        };
+        
+        if (isNurseRole(member.role)) {
+          newAssignments.night.nurses.push(assignment);
+        } else {
+          newAssignments.night.assistants.push(assignment);
+        }
+      }
+    });
+    setAssignments(newAssignments);
+  };
+
+  const changeDate = async (direction) => {
+    const newDate = new Date(selectedDate);
+    if (direction === 'next') {
+      newDate.setDate(newDate.getDate() + 1);
+    } else {
+      newDate.setDate(newDate.getDate() - 1);
+    }
+    setSelectedDate(newDate);
+    await loadScheduleData(newDate);
+    await loadAssignments(newDate);
+  };
+
+  const formatDate = (date) => {
+    return date.toLocaleDateString('th-TH', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    });
+  };
+
+  if (loading) {
+    return (
+      <div className="p-6">
+        <div className="flex items-center justify-center h-64">
+          <div className="text-lg text-gray-600">กำลังโหลดข้อมูล...</div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="assignments-container min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-slate-100 p-4">
+      <style>{`
+        select option {
+          color: #000000 !important;
+          background-color: #ffffff !important;
+          padding: 8px 12px;
+        }
+        select option:hover {
+          background-color: #f3f4f6 !important;
+        }
+        select option:checked {
+          background-color: #3b82f6 !important;
+          color: #ffffff !important;
+        }
+        
+        /* Auto Landscape Mode for Mobile */
+        @media (max-width: 768px) and (orientation: landscape) {
+          .assignments-container {
+            padding: 8px !important;
+          }
+          
+          .assignments-header {
+            padding: 12px !important;
+            margin-bottom: 16px !important;
+          }
+          
+          .assignments-header h1 {
+            font-size: 1.25rem !important;
+            margin-bottom: 8px !important;
+          }
+          
+          .assignments-table {
+            font-size: 0.75rem !important;
+          }
+          
+          .assignments-table th,
+          .assignments-table td {
+            padding: 6px 8px !important;
+          }
+          
+          .assignments-table select {
+            padding: 4px 6px !important;
+            font-size: 0.75rem !important;
+          }
+          
+          .shift-tabs {
+            gap: 4px !important;
+          }
+          
+          .shift-tab {
+            padding: 4px 8px !important;
+            font-size: 0.75rem !important;
+          }
+          
+          .table-section {
+            margin-bottom: 16px !important;
+          }
+          
+          .section-header {
+            padding: 8px 12px !important;
+            font-size: 0.875rem !important;
+          }
+        }
+      `}</style>
+
+
+      {/* Header */}
+      <div className="assignments-header mb-6 bg-white/90 backdrop-blur-sm rounded-xl p-4 sm:p-6 shadow-lg border border-gray-200">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between space-y-4 sm:space-y-0">
+          <div className="flex-1 sm:order-1"></div>
+          <div className="text-center flex-1 sm:order-2">
+            <h1 className="text-xl sm:text-3xl font-bold text-gray-800">ตารางมอบหมายงาน</h1>
+            {!canManageAssignments && (
+              <div className="mt-2 px-2 py-1 bg-yellow-100 border border-yellow-300 rounded-full text-yellow-800 text-xs sm:text-sm">
+                <span className="flex items-center justify-center gap-1">
+                  <svg className="w-3 h-3 sm:w-4 sm:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                  </svg>
+                  <span className="hidden sm:inline">โหมดดูอย่างเดียว - ไม่มีสิทธิ์แก้ไข</span>
+                  <span className="sm:hidden">ดูอย่างเดียว</span>
+                </span>
+              </div>
+            )}
+          </div>
+          
+          {/* Date Selector */}
+          <div className="flex items-center gap-2 sm:gap-4 flex-1 justify-center sm:justify-end sm:order-3">
+            <button
+              onClick={() => changeDate('prev')}
+              className="p-1.5 sm:p-2 rounded-full bg-blue-50 hover:bg-blue-100 text-blue-600 transition-colors border border-blue-200"
+            >
+              <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+              </svg>
+            </button>
+            
+            <div className="text-center">
+              <div className="text-sm sm:text-lg font-semibold text-gray-800">
+                {formatDate(selectedDate)}
+              </div>
+            </div>
+            
+            <button
+              onClick={() => changeDate('next')}
+              className="p-1.5 sm:p-2 rounded-full bg-blue-50 hover:bg-blue-100 text-blue-600 transition-colors border border-blue-200"
+            >
+              <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Shift Tabs */}
+      <div className="mb-6">
+        <div className="shift-tabs flex space-x-1 bg-white rounded-lg p-1 shadow-sm">
+          {['morning', 'afternoon', 'night'].map((shift) => (
+            <button
+              key={shift}
+              onClick={() => setActiveShift(shift)}
+              className={`shift-tab flex-1 px-4 py-2 rounded-md font-medium transition-all ${
+                activeShift === shift
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'text-gray-600 hover:text-gray-800 hover:bg-gray-100'
+              }`}
+            >
+              เวร{getShiftName(shift)}
+            </button>
+          ))}
+        </div>
+      </div>
+
+             
+
+      {/* Nurses Table */}
+      <div className="table-section bg-white/90 backdrop-blur-sm rounded-xl shadow-xl border border-blue-200/50 overflow-hidden mb-6">
+        <div className="section-header bg-blue-100 text-blue-800 p-4 border-l-4 border-blue-400">
+          <h3 className="text-xl font-semibold text-center">พยาบาล</h3>
+        </div>
+        
+        <div className="overflow-x-auto">
+          <table className="assignments-table w-full min-w-[600px]">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-3 text-left text-sm font-medium text-gray-700 min-w-[120px]">เตียง</th>
+                <th className="px-4 py-3 text-left text-sm font-medium text-gray-700 min-w-[160px]">ชื่อเจ้าหน้าที่</th>
+                <th className="px-4 py-3 text-left text-sm font-medium text-gray-700 min-w-[140px]">หน้าที่</th>
+                <th className="px-4 py-3 text-left text-sm font-medium text-gray-700 min-w-[100px]">ERT</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-200">
+              {assignments[activeShift].nurses.map((assignment) => (
+                <tr key={assignment.id} className="hover:bg-gray-50">
+                  <td className="px-4 py-3">
+                    {canManageAssignments ? (
+                      <select
+                        value={assignment.bed}
+                        onChange={(e) => updateNurseAssignment(activeShift, assignment.id, 'bed', e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        <option value="">เลือกเตียง</option>
+                        {bedOptions && bedOptions.length > 0 ? bedOptions.map((bed) => (
+                          <option key={bed.id} value={bed.name} style={{ color: '#000000', backgroundColor: '#ffffff' }}>
+                            {bed.name}
+                          </option>
+                        )) : (
+                          <option value="" disabled style={{ color: '#666666' }}>ไม่มีข้อมูลเตียง</option>
+                        )}
+                      </select>
+                    ) : (
+                      <div className="px-3 py-2 text-gray-800 font-medium">
+                        {assignment.bed || 'ยังไม่ได้เลือก'}
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="px-3 py-2 text-gray-800 font-medium">
+                      {(() => {
+                        const member = teamMembers.find(m => m.id === assignment.memberId);
+                        return member ? `${member.firstName} ${member.lastName}` : 'ไม่พบข้อมูล';
+                      })()}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3">
+                    {canManageAssignments ? (
+                      <select
+                        value={assignment.duty}
+                        onChange={(e) => updateNurseAssignment(activeShift, assignment.id, 'duty', e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        <option value="">เลือกหน้าที่</option>
+                        {dutyOptions && dutyOptions.length > 0 ? dutyOptions.map((duty) => (
+                          <option key={duty.id} value={duty.name} style={{ color: '#000000', backgroundColor: '#ffffff' }}>
+                            {duty.name}
+                          </option>
+                        )) : (
+                          <option value="" disabled style={{ color: '#666666' }}>ไม่มีข้อมูลหน้าที่</option>
+                        )}
+                      </select>
+                    ) : (
+                      <div className="px-3 py-2 text-gray-800 font-medium">
+                        {assignment.duty || 'ยังไม่ได้เลือก'}
+                      </div>
+                    )}
+                  </td>
+                                     <td className="px-4 py-3">
+                     {canManageAssignments ? (
+                       <select
+                         value={assignment.ert}
+                         onChange={(e) => updateNurseAssignment(activeShift, assignment.id, 'ert', e.target.value)}
+                         className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                       >
+                         <option value="">เลือก ERT</option>
+                         {extraDutyOptions && extraDutyOptions.length > 0 ? extraDutyOptions.map((extraDuty) => (
+                           <option key={extraDuty.id} value={extraDuty.name} style={{ color: '#000000', backgroundColor: '#ffffff' }}>
+                             {extraDuty.name}
+                           </option>
+                         )) : (
+                           <option value="" disabled style={{ color: '#666666' }}>ไม่มีข้อมูล ERT</option>
+                         )}
+                       </select>
+                     ) : (
+                       <div className="px-3 py-2 text-gray-800 font-medium">
+                         {assignment.ert || 'ยังไม่ได้เลือก'}
+                       </div>
+                     )}
+                   </td>
+
+                </tr>
+              ))}
+              {assignments[activeShift].nurses.length === 0 && (
+                <tr>
+                  <td colSpan={4} className="px-4 py-8 text-center text-gray-500">
+                    ไม่มีพยาบาลในเวรนี้
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        
+        {/* แสดงข้อมูลผู้บันทึกพยาบาลล่าสุดและปุ่มบันทึก */}
+        {canManageAssignments && (
+          <div className="px-4 py-3 bg-blue-50 border-t border-blue-200">
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
+              {/* แสดงข้อมูลผู้บันทึกล่าสุด */}
+              <div className="flex items-center text-blue-700 text-sm">
+                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                </svg>
+                บันทึกพยาบาลล่าสุดโดย: {lastSavedByNurses || '-'}
+              </div>
+              
+              {/* ปุ่มบันทึกพยาบาล */}
+              <button
+                onClick={saveNursesAssignments}
+                disabled={savingNurses}
+                className={`px-4 py-2 rounded-lg font-medium transition-all duration-300 shadow-md hover:shadow-lg ${
+                  savingNurses
+                    ? 'bg-gray-400 cursor-not-allowed text-white'
+                    : savedNurses
+                    ? 'bg-blue-200 hover:bg-blue-300 text-blue-800 hover:scale-105'
+                    : 'bg-blue-200 hover:bg-blue-300 text-blue-800 hover:scale-105'
+                }`}
+              >
+                {savingNurses ? 'กำลังบันทึก...' : savedNurses ? 'บันทึกพยาบาลแล้ว' : 'บันทึกพยาบาล'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Assistants Table */}
+      <div className="table-section bg-white/90 backdrop-blur-sm rounded-xl shadow-xl border border-green-200/50 overflow-hidden mb-6">
+        <div className="section-header bg-green-100 text-green-800 p-4 border-l-4 border-green-400">
+          <h3 className="text-xl font-semibold text-center">ผู้ช่วยพยาบาล / ผู้ช่วยเหลือคนไข้</h3>
+        </div>
+        
+        <div className="overflow-x-auto">
+          <table className="assignments-table w-full min-w-[500px]">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-3 text-left text-sm font-medium text-gray-700 min-w-[120px]">เตียง</th>
+                <th className="px-4 py-3 text-left text-sm font-medium text-gray-700 min-w-[200px]">ชื่อเจ้าหน้าที่</th>
+                <th className="px-4 py-3 text-left text-sm font-medium text-gray-700 min-w-[120px]">ERT</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-200">
+              {assignments[activeShift].assistants.map((assignment) => (
+                <tr key={assignment.id} className="hover:bg-gray-50">
+                  <td className="px-4 py-3">
+                    {canManageAssignments ? (
+                      <select
+                        value={assignment.bed}
+                        onChange={(e) => updateAssistantAssignment(activeShift, assignment.id, 'bed', e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        <option value="">เลือกเตียง</option>
+                        {bedOptions && bedOptions.length > 0 ? bedOptions
+                          .filter((b) => b.forAssistant !== false)
+                          .map((bed) => (
+                            <option key={bed.id} value={bed.name} style={{ color: '#000000', backgroundColor: '#ffffff' }}>
+                              {bed.name}
+                            </option>
+                        )) : (
+                          <option value="" disabled style={{ color: '#666666' }}>ไม่มีข้อมูลเตียง</option>
+                        )}
+                      </select>
+                    ) : (
+                      <div className="px-3 py-2 text-gray-800 font-medium">
+                        {assignment.bed || 'ยังไม่ได้เลือก'}
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="px-3 py-2 text-gray-800 font-medium">
+                      {(() => {
+                        const member = teamMembers.find(m => m.id === assignment.memberId);
+                        return member ? `${member.firstName} ${member.lastName}` : 'ไม่พบข้อมูล';
+                      })()}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3">
+                    {canManageAssignments ? (
+                      <select
+                        value={assignment.ert}
+                        onChange={(e) => updateAssistantAssignment(activeShift, assignment.id, 'ert', e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        <option value="">เลือก ERT</option>
+                        {extraDutyOptions && extraDutyOptions.length > 0 ? extraDutyOptions.map((extraDuty) => (
+                          <option key={extraDuty.id} value={extraDuty.name} style={{ color: '#000000', backgroundColor: '#ffffff' }}>
+                            {extraDuty.name}
+                          </option>
+                        )) : (
+                          <option value="" disabled style={{ color: '#666666' }}>ไม่มีข้อมูล ERT</option>
+                        )}
+                      </select>
+                    ) : (
+                      <div className="px-3 py-2 text-gray-800 font-medium">
+                        {assignment.ert || 'ยังไม่ได้เลือก'}
+                      </div>
+                    )}
+                  </td>
+
+                </tr>
+              ))}
+              {assignments[activeShift].assistants.length === 0 && (
+                <tr>
+                  <td colSpan={3} className="px-4 py-8 text-center text-gray-500">
+                    ไม่มีผู้ช่วยในเวรนี้
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        
+        {/* แสดงข้อมูลผู้บันทึกผู้ช่วยล่าสุดและปุ่มบันทึก */}
+        {canManageAssignments && (
+          <div className="px-4 py-3 bg-green-50 border-t border-green-200">
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
+              {/* แสดงข้อมูลผู้บันทึกล่าสุด */}
+              <div className="flex items-center text-green-700 text-sm">
+                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                </svg>
+                บันทึกผู้ช่วยล่าสุดโดย: {lastSavedByAssistants || '-'}
+              </div>
+              
+              {/* ปุ่มบันทึกผู้ช่วย */}
+              <button
+                onClick={saveAssistantsAssignments}
+                disabled={savingAssistants}
+                className={`px-4 py-2 rounded-lg font-medium transition-all duration-300 shadow-md hover:shadow-lg ${
+                  savingAssistants
+                    ? 'bg-gray-400 cursor-not-allowed text-white'
+                    : savedAssistants
+                    ? 'bg-green-200 hover:bg-green-300 text-green-800 hover:scale-105'
+                    : 'bg-green-200 hover:bg-green-300 text-green-800 hover:scale-105'
+                }`}
+              >
+                {savingAssistants ? 'กำลังบันทึก...' : savedAssistants ? 'บันทึกผู้ช่วยแล้ว' : 'บันทึกผู้ช่วย'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+      
+      {/* ปุ่มลอยสำหรับสลับโหมดแนวนอน */}
+      <LandscapeToggle />
+    </div>
+  );
+};
+
+export default Assignments;

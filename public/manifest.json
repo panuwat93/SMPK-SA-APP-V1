@@ -1,0 +1,27 @@
+{
+  "short_name": "SMPK-SA",
+  "name": "ระบบจัดการตารางเวรและคำนวณเงิน SMPK-SA",
+  "description": "ระบบจัดการตารางเวรและคำนวณเงินสำหรับโรงพยาบาล",
+  "icons": [
+    {
+      "src": "logo.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": "/",
+  "display": "standalone",
+  "theme_color": "#162144",
+  "background_color": "#ffffff",
+  "orientation": "portrait-primary",
+  "scope": "/",
+  "lang": "th",
+  "categories": ["medical", "productivity", "business"]
+}
